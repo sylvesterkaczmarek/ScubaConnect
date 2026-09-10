@@ -1,0 +1,57 @@
+name: Validate GWS run input prefixes
+on:
+  push:
+    branches: [validation/gws-run-input-prefix]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare clean candidate
+        run: |
+          cp gws/image/tests/test_config_prefix.py "$RUNNER_TEMP/test_config_prefix.py"
+          git switch -c fix/gws-run-input-prefix 03774f93dbedb2ac75d6bc3e5b2149cd2abdc234
+          mkdir -p gws/image/tests
+          cp "$RUNNER_TEMP/test_config_prefix.py" gws/image/tests/test_config_prefix.py
+          python -m pip install pytest
+      - name: Reproduce incorrect prefix selection
+        run: |
+          set +e
+          python -m pytest -q gws/image/tests/test_config_prefix.py > "$RUNNER_TEMP/before.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/before.log"
+          test "$result" -eq 1
+          grep -q '6 failed, 2 passed' "$RUNNER_TEMP/before.log"
+      - name: Restrict listing to the selected directory
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('gws/image/main.py')
+          source = path.read_text()
+          old = 'list_blobs(INPUT_BUCKET, prefix=RUN_TYPE)'
+          new = 'list_blobs(INPUT_BUCKET, prefix=f"{RUN_TYPE}/")'
+          assert source.count(old) == 1
+          path.write_text(source.replace(old, new, 1))
+          PY
+      - name: Verify assessments and both output destinations
+        run: |
+          python -m pytest -q gws/image/tests/test_config_prefix.py
+          python -m py_compile gws/image/main.py gws/image/tests/test_config_prefix.py
+          git diff --check
+      - name: Publish only the tested changes
+        run: |
+          git add gws/image/main.py gws/image/tests/test_config_prefix.py
+          git config user.name 'Sylvester Kaczmarek'
+          git config user.email '16242628+sylvesterkaczmarek@users.noreply.github.com'
+          git commit -s -m 'Restrict GWS configuration downloads to the selected run directory'
+          git push origin HEAD:refs/heads/fix/gws-run-input-prefix
+          git log -1 --format='%H %s'
